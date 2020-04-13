@@ -1,2 +1,2 @@
 # pytorch_ext
-pytorch operators
+extension modules for pytorch
