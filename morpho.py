@@ -132,5 +132,5 @@ class Skeleton3d(th.nn.Module):
             sk0 = e0 - o0
             sk += sk0*2.
             if i == self.n-1:
-                return closing3d(sk + e0)
+                return closing3d(sk + o0*2)
             e0 = ee0/2.
