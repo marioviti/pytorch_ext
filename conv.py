@@ -6,6 +6,359 @@ from scipy.stats import norm
 import numpy.matlib as mtlb
 from .conv_utils import *
 
+##################################################### NOT TRAINABLE ##################################################### NOT TRAINABLE 
+# Operators in 2d/3d
+# Gradient
+# Hessian
+# GaussianBlur
+# Kurvature
+# Laplacian
+    
+kernels3D = {
+               'dx0' : lambda : np.array([[[-0.5,0,0.5]]]).transpose(2,0,1),
+               'dy0' : lambda : np.array([[[-0.5,0,0.5]]]).transpose(0,2,1),
+               'dz0' : lambda : np.array([[[-0.5,0,0.5]]]),
+               'dx+-' : lambda : np.array([[[-1,1]]]).transpose(2,0,1),
+               'dy+-' : lambda : np.array([[[-1,1]]]).transpose(0,2,1),
+               'dz+-' : lambda : np.array([[[-1,1]]]),
+               'Gx' : lambda sigma: norm.pdf(np.linspace(-2*sigma,2*sigma,sigma*2+sigma%2),0,sigma)[..., np.newaxis, np.newaxis],
+               'Gy' : lambda sigma: norm.pdf(np.linspace(-2*sigma,2*sigma,sigma*2+sigma%2),0,sigma)[np.newaxis, :, np.newaxis],
+               'Gz' : lambda sigma: norm.pdf(np.linspace(-2*sigma,2*sigma,sigma*2+sigma%2),0,sigma)[np.newaxis, np.newaxis],
+            }
+
+conv_funs = { 
+                1: F.conv1d,
+                2: F.conv2d, 
+                3: F.conv3d 
+            }
+
+kernels2D = {
+               'Gx' : lambda sigma: norm.pdf(np.linspace(-2*sigma,2*sigma,sigma*2+sigma%2),0,sigma)[np.newaxis],
+               'Gy' : lambda sigma: norm.pdf(np.linspace(-2*sigma,2*sigma,sigma*2+sigma%2),0,sigma)[..., np.newaxis],
+               'dy0' : lambda : np.array([[-0.5,0,0.5]]).T,
+               'dx0' : lambda : np.array([[-0.5,0,0.5]]),
+               'dy+-' : lambda : np.array([[-1.,1.]]).T,
+               'dx+-' : lambda : np.array([[-1.,1.]]),
+            }
+
+class Kurvature2D(nn.Module):
+    
+    def __init__(self, input_channels):
+        super(Kurvature2D, self).__init__()
+        dx0 = kernels2D['dx0']() 
+        dy0 = kernels2D['dy0']()
+        self.padx_0 = nn.ReplicationPad2d(list(reversed([0,0,1,1])))
+        self.pady_0 = nn.ReplicationPad2d(list(reversed([1,1,0,0])))
+        self.conv_dx_0 = Convolve(dx0, input_channels, padding=0)
+        self.conv_dy_0 = Convolve(dy0, input_channels, padding=0)
+        dx_f = kernels2D['dx+-']() 
+        dy_f = kernels2D['dy+-']()
+        self.padx_f = nn.ReplicationPad2d(list(reversed([0,0,1,0])))
+        self.pady_f = nn.ReplicationPad2d(list(reversed([1,0,0,0])))
+        self.conv_dx_f = Convolve(dx_f, input_channels, padding=0)
+        self.conv_dy_f = Convolve(dy_f, input_channels, padding=0)
+        
+        self.padx_b = nn.ReplicationPad2d(list(reversed([0,0,0,1])))
+        self.pady_b = nn.ReplicationPad2d(list(reversed([0,1,0,0])))
+        self.conv_dx_b = self.conv_dx_f
+        self.conv_dy_b = self.conv_dy_f
+        
+    def forward(self, x):
+        dx_f = self.conv_dx_f(self.padx_f(x))
+        dy_f = self.conv_dy_f(self.pady_f(x))
+        dx_0 = self.conv_dx_0(self.padx_0(x))
+        dy_0 = self.conv_dy_0(self.pady_0(x))
+        norm_x = th.sqrt(1e-10 + dx_f**2 + dy_0**2)
+        norm_y = th.sqrt(1e-10 + dx_0**2 + dy_f**2)
+        
+        dx_f_n = dx_f/norm_x
+        dy_f_n = dy_f/norm_y
+        
+        div_x = self.conv_dx_b(self.padx_b(dx_f_n))
+        div_y = self.conv_dy_b(self.pady_b(dy_f_n))
+        
+        out = div_x + div_y
+        return out
+    
+class Kurvature3D(nn.Module):
+    
+    def __init__(self, input_channels):
+        super(Kurvature3D, self).__init__()
+        dx_0 = kernels3D['dx0']() 
+        dy_0 = kernels3D['dy0']()
+        dz_0 = kernels3D['dz0']()
+        self.padx_b = nn.ReplicationPad3d(list(reversed([1,1,0,0,0,0])))
+        self.pady_b = nn.ReplicationPad3d(list(reversed([0,0,1,1,0,0])))
+        self.padz_b = nn.ReplicationPad3d(list(reversed([0,0,0,0,1,1])))
+        self.conv_dx_0 = Convolve(dx_0, input_channels, padding=0)
+        self.conv_dy_0 = Convolve(dy_0, input_channels, padding=0)
+        self.conv_dz_0 = Convolve(dz_0, input_channels, padding=0)
+
+        dx_bf = kernels3D['dx+-']() 
+        dy_bf = kernels3D['dy+-']()
+        dz_bf = kernels3D['dz+-']()
+        self.padx_f = nn.ReplicationPad3d(list(reversed([1,0,0,0,0,0])))
+        self.pady_f = nn.ReplicationPad3d(list(reversed([0,0,1,0,0,0])))
+        self.padz_f = nn.ReplicationPad3d(list(reversed([0,0,0,0,1,0])))
+
+        self.padx_b = nn.ReplicationPad3d(list(reversed([0,1,0,0,0,0])))
+        self.pady_b = nn.ReplicationPad3d(list(reversed([0,0,0,1,0,0])))
+        self.padz_b = nn.ReplicationPad3d(list(reversed([0,0,0,0,0,1])))
+        self.conv_dx_b = Convolve(dx_bf, input_channels, padding=0)
+        self.conv_dx_f = self.conv_dx_b
+        self.conv_dy_b = Convolve(dy_bf, input_channels, padding=0)
+        self.conv_dy_f = self.conv_dy_b
+        self.conv_dz_b = Convolve(dz_bf, input_channels, padding=0)
+        self.conv_dz_f = self.conv_dz_b
+        
+    def forward(self, x):
+        dx_f = self.conv_dx_f(self.padx_f(x))
+        dy_f = self.conv_dy_f(self.pady_f(x))
+        dz_f = self.conv_dz_f(self.padz_f(x))
+        
+        dx_0 = self.conv_dx_0(self.padx_0(x))
+        dy_0 = self.conv_dy_0(self.pady_0(x))
+        dz_0 = self.conv_dz_0(self.padz_0(x))
+
+        norm_x = th.sqrt(1e-10 + dx_f**2 + dy_0**2 + dz_0**2)
+        norm_y = th.sqrt(1e-10 + dx_0**2 + dy_f**2 + dz_0**2)
+        norm_z = th.sqrt(1e-10 + dx_0**2 + dy_0**2 + dz_f**2)
+        
+        dx_f_n = dx_f/norm_x
+        dy_f_n = dy_f/norm_y
+        dz_f_n = dz_f/norm_z
+        
+        div_x = self.conv_dx_b(self.padx_b(dx_f_n))
+        div_y = self.conv_dy_b(self.pady_b(dy_f_n))
+        div_z = self.conv_dz_b(self.padz_b(dz_f_n))
+        
+        out = div_x + div_y + div_z
+        return out
+
+class Gradient2D(nn.Module):
+    
+    def __init__(self, input_channels, method='0'):
+        super(Gradient2D, self).__init__()
+        if method == '0':
+            dx = kernels2D['dx0']() 
+            dy = kernels2D['dy0']()
+            self.padx = nn.ReplicationPad3d(list(reversed([0,0,1,1])))
+            self.pady = nn.ReplicationPad3d(list(reversed([1,1,0,0])))
+        if method == '+':
+            dx = kernels2D['dx+-']() 
+            dy = kernels2D['dy+-']()
+            self.padx = nn.ReplicationPad3d(list(reversed([0,0,1,0])))
+            self.pady = nn.ReplicationPad3d(list(reversed([1,0,0,0])))
+        if method == '-':
+            dx = kernels2D['dx+-']() 
+            dy = kernels2D['dy+-']()
+            self.padx = nn.ReplicationPad3d(list(reversed([0,0,0,1])))
+            self.pady = nn.ReplicationPad3d(list(reversed([0,1,0,0])))
+        self.conv_dx = Convolve(dx, input_channels, padding=0)
+        self.conv_dy = Convolve(dy, input_channels, padding=0)
+        
+    def forward(self,x):
+        dx = self.conv_dx(self.padx(x))
+        dy = self.conv_dy(self.pady(x))
+        return dx, dy
+    
+class Gradient3D(nn.Module):
+    
+    def __init__(self, input_channels):        
+        super(Gradient3D, self).__init__()
+        if method == '0':
+            dx = kernels3D['dx0']() 
+            dy = kernels3D['dy0']()
+            dz = kernels3D['dz0']()
+            self.padx = nn.ReplicationPad3d(list(reversed([1,1,0,0,0,0])))
+            self.pady = nn.ReplicationPad3d(list(reversed([0,0,1,1,0,0])))
+            self.padz = nn.ReplicationPad3d(list(reversed([0,0,0,0,1,1])))
+        if method == '+':
+            dx = kernels3D['dx+-']() 
+            dy = kernels3D['dy+-']()
+            dz = kernels3D['dy+-']()
+            self.padx = nn.ReplicationPad3d(list(reversed([1,0,0,0,0,0])))
+            self.pady = nn.ReplicationPad3d(list(reversed([0,0,1,0,0,0])))
+            self.padz = nn.ReplicationPad3d(list(reversed([0,0,0,0,1,0])))
+        if method == '-':
+            dx = kernels3D['dx+-']() 
+            dy = kernels3D['dy+-']()
+            dz = kernels3D['dy+-']()
+            self.padx = nn.ReplicationPad3d(list(reversed([0,1,0,0,0,0])))
+            self.pady = nn.ReplicationPad3d(list(reversed([0,0,0,1,0,0])))
+            self.padz = nn.ReplicationPad3d(list(reversed([0,0,0,0,0,1])))
+        self.conv_dx = Convolve(dx, input_channels, padding=0)
+        self.conv_dy = Convolve(dy, input_channels, padding=0)
+        self.conv_dz = Convolve(dz, input_channels, padding=0)
+        
+    def forward(self,x):
+        dx = self.conv_dx(self.padx(x))
+        dy = self.conv_dy(self.pady(x))
+        dz = self.conv_dz(self.padz(x))
+        return dx, dy, dz
+    
+class Hessian2D(nn.Module):
+    
+    def __init__(self, input_channels):
+        super(Hessian2D, self).__init__()
+        self.gradient = Gradient2D(input_channels)
+        
+    def forward(self,x):
+        dx, dy = self.gradient(x)
+        dxx = self.gradient.conv_dx(self.gradient.padx(dx))
+        dyy = self.gradient.conv_dy(self.gradient.pady(dy))
+        dxy = self.gradient.conv_dx(self.gradient.padx(dy))
+        return dx, dy, dxx, dyy, dxy
+    
+class Hessian3D(nn.Module):
+    
+    def __init__(self, input_channels):
+        super(Hessian3D, self).__init__()
+        self.gradient = Gradient3D(input_channels)
+        
+    def forward(self,x):
+        dx, dy, dz = self.gradient(x)
+        dxx = self.gradient.conv_dx(self.gradient.padx(dx))
+        dyy = self.gradient.conv_dy(self.gradient.pady(dy))
+        dzz = self.gradient.conv_dz(self.gradient.padz(dz))
+        
+        dxy = self.gradient.conv_dx(self.gradient.padx(dy))
+        dxz = self.gradient.conv_dx(self.gradient.padx(dz))
+        dyz = self.gradient.conv_dz(self.gradient.padz(dy))
+        return dx, dy, dxx, dyy, dxy, dxz, dyz
+    
+class Gaussian2D(th.nn.Module):
+    
+    def __init__(self, sigma, input_channels):
+        super(Gaussian2D, self).__init__()
+        if sigma%2 == 0:
+            print('warning: not symmetric, fallback to sigma - 1')
+            sigma -= 1
+        Gx = kernels2D['Gx'](sigma)
+        Gy = kernels2D['Gy'](sigma)
+        self.padx = th.nn.ReplicationPad2d(list(reversed([sigma,sigma,0,0])))
+        self.pady = th.nn.ReplicationPad2d(list(reversed([0,0,sigma,sigma])))
+        self.conv_Gx = Convolve(Gx/Gx.sum(), input_channels, padding=0)
+        self.conv_Gy = Convolve(Gy/Gy.sum(), input_channels, padding=0)
+        
+    def forward(self,x):
+        out = self.conv_Gx(self.padx(x))
+        out = self.conv_Gy(self.pady(out))
+        return out
+    
+class Gaussian3D(nn.Module):
+    
+    def __init__(self, sigma, input_channels):
+        super(Gaussian3D, self).__init__()
+        if sigma%2 == 0:
+            print('warning: not symmetric, fallback to sigma - 1')
+            sigma -= 1
+        Gx = kernels3D['Gx'](sigma)
+        Gy = kernels3D['Gy'](sigma)
+        Gz = kernels3D['Gz'](sigma)
+        self.padx = nn.ReplicationPad3d(list(reversed([sigma,sigma,0,0,0,0])))
+        self.pady = nn.ReplicationPad3d(list(reversed([0,0,sigma,sigma,0,0])))
+        self.padz = nn.ReplicationPad3d(list(reversed([0,0,0,0,sigma,sigma])))
+        self.conv_Gx = Convolve(Gx/Gx.sum(), input_channels, padding=0)
+        self.conv_Gy = Convolve(Gy/Gy.sum(), input_channels, padding=0)
+        self.conv_Gz = Convolve(Gz/Gz.sum(), input_channels, padding=0)
+        
+    def forward(self,x):
+        out = self.conv_Gx(self.padx(x))
+        out = self.conv_Gy(self.pady(out))
+        out = self.conv_Gz(self.padz(out))
+        return out
+
+class Laplacian2D(th.nn.Module):
+    
+    def __init__(self, sigma, input_channels):
+        super(Laplacian2D, self).__init__()
+        self.gaussian = Gaussian2D(sigma, input_channels)
+        
+    def forward(self,x):
+        return self.gaussian(x) - x
+    
+class Laplacian3D(th.nn.Module):
+    
+    def __init__(self, sigma, input_channels):
+        super(Laplacian3D, self).__init__()
+        self.gaussian = Gaussian3D(sigma, input_channels)
+        
+    def forward(self,x):
+        return self.gaussian(x) - x
+
+class Pyramid(nn.Module):
+    
+    def __init__(self, input_channels, levels=1, dimensions=3):
+        super(Pyramid, self).__init__()
+        kernel_blur = np.ones([3]*dimensions)
+        self.dimensions = dimensions
+        self.conv_blur = Convolve(kernel_blur, input_channels)
+        self.levels = levels
+        
+    def forward(self,x):
+        out = []
+        for level in range(self.levels):
+            x_ = self.conv_blur(x)
+            dog = x_ - ((3**self.dimensions-1)*x)
+            if self.dimensions == 3:
+                x = x_[:,:,::2,::2,::2]
+            if self.dimensions == 2:
+                x = x_[:,:,::2,::2]
+            out += [[x_,dog]]
+        return out
+
+class Convolve(nn.Module):
+    
+    def __init__(self, kernel, input_channels, stride=1, padding=1, dilation=1):
+        super(Convolve, self).__init__()
+        self.convfun = conv_funs[len(kernel.shape)]
+        kernel = kernel[np.newaxis,np.newaxis]
+        kernel = np.concatenate([kernel]*input_channels, axis=0)
+        # THIS IS SO IMPORTANT ....
+        self.kernel_tensor = th.nn.Parameter(th.from_numpy(kernel).float())
+        self.kernel_tensor.requires_grad = False
+        self.input_channels = input_channels
+        self.dilation, self.stride, self.padding = dilation, stride, padding
+        
+    def forward(self, x):
+        x = self.convfun(x, self.kernel_tensor, groups=self.input_channels, 
+                         stride=self.stride, padding=self.padding, dilation=self.dilation)
+        return x
+    
+class ReplicationPad(nn.Module):
+    
+    def __init__(self, pad):
+        super(ReplicationPad, self).__init__()
+        if len(pad) == 6:
+            self.pad = nn.ReplicationPad3d(list(reversed(pad)))
+        if len(pad) == 4:
+            self.pad = nn.ReplicationPad2d(list(reversed(pad)))
+        if len(pad) == 2:
+            self.pad = nn.ReplicationPad1d(list(reversed(pad)))
+    
+    def forward(self,x):
+        return self.pad(x)
+    
+class DFDT(th.nn.Module):
+    def __init__(self, input_channels, t=5):
+        super(DFDT, self).__init__()
+        self.conv_g = GaussianBlur3D(t, input_channels)
+        self.conv_n = Gradient3D(input_channels)
+        self.conv_nt = Gradient3D(1)
+        
+    def forward(self, inputs):
+        x, phi_t0 = inputs
+        phi_t = self.conv_g(1-phi_t0)
+        im_dx_t, im_dy_t, im_dz_t = self.conv_n(x)
+        phi_t_dx, phi_t_dy, phi_t_dz = self.conv_nt(phi_t)
+        eps = 1e-10
+        grad_phi_t = th.sqrt(phi_t_dx**2 + phi_t_dy**2 + phi_t_dz**2 + eps) 
+        dI_dt = ( im_dx_t*phi_t_dx + im_dy_t*phi_t_dy + im_dz_t*phi_t_dz )/grad_phi_t
+        return dI_dt
+
+##################################################### TRAINABLE ##################################################### TRAINABLE 
+    
 class NNWl(nn.Module):
     """Implementation of https://arxiv.org/pdf/1812.00572.pdf U is set to 1"""
     def __init__(self, input_channels, output_channels, wl=0.5, ww=1.0, eps=1e-3):
@@ -75,137 +428,6 @@ class NNHist(nn.Module):
         """
         self.w.data.clamp_(1e-8)
 
-# Convolution non trainable layers
-
-kernels3D = {
-               'dx' : lambda : np.array([[[-1,0,1]]]).transpose(2,0,1),
-               'dy' : lambda : np.array([[[-1,0,1]]]).transpose(0,2,1),
-               'dz' : lambda : np.array([[[-1,0,1]]]),
-               'Gx' : lambda sigma: norm.pdf(np.linspace(-2*sigma,2*sigma,sigma*2+sigma%2),0,sigma)[..., np.newaxis, np.newaxis],
-               'Gy' : lambda sigma: norm.pdf(np.linspace(-2*sigma,2*sigma,sigma*2+sigma%2),0,sigma)[np.newaxis, :, np.newaxis],
-               'Gz' : lambda sigma: norm.pdf(np.linspace(-2*sigma,2*sigma,sigma*2+sigma%2),0,sigma)[np.newaxis, np.newaxis],
-            }
-
-conv_funs = { 
-                1: F.conv1d,
-                2: F.conv2d, 
-                3: F.conv3d 
-            }
-
-class Pyramid(nn.Module):
-    
-    def __init__(self, input_channels, levels=1, dimensions=3):
-        super(Pyramid, self).__init__()
-        kernel_blur = np.ones([3]*dimensions)
-        self.dimensions = dimensions
-        self.conv_blur = Convolve(kernel_blur, input_channels)
-        self.levels = levels
-        
-    def forward(self,x):
-        out = []
-        for level in range(self.levels):
-            x_ = self.conv_blur(x)
-            dog = x_ - ((3**self.dimensions-1)*x)
-            if self.dimensions == 3:
-                x = x_[:,:,::2,::2,::2]
-            if self.dimensions == 2:
-                x = x_[:,:,::2,::2]
-            out += [[x_,dog]]
-        return out
-
-class Convolve(nn.Module):
-    
-    def __init__(self, kernel, input_channels, stride=1, padding=1, dilation=1):
-        super(Convolve, self).__init__()
-        self.convfun = conv_funs[len(kernel.shape)]
-        kernel = kernel[np.newaxis,np.newaxis]
-        kernel = np.concatenate([kernel]*input_channels, axis=0)
-        # THIS IS SO IMPORTANT ....
-        self.kernel_tensor = th.nn.Parameter(th.from_numpy(kernel).float())
-        self.kernel_tensor.requires_grad = False
-        self.input_channels = input_channels
-        self.dilation, self.stride, self.padding = dilation, stride, padding
-        
-    def forward(self, x):
-        x = self.convfun(x, self.kernel_tensor, groups=self.input_channels, 
-                         stride=self.stride, padding=self.padding, dilation=self.dilation)
-        return x
-    
-class GaussianBlur3D(nn.Module):
-    
-    def __init__(self, sigma, input_channels):
-        super(GaussianBlur3D, self).__init__()
-        if sigma%2 == 0:
-            print('warning: not symmetric, fallback to sigma - 1')
-            sigma -= 1
-        Gx = kernels3D['Gx'](sigma)
-        Gy = kernels3D['Gy'](sigma)
-        Gz = kernels3D['Gz'](sigma)
-        self.padx = nn.ReplicationPad3d(list(reversed([sigma,sigma,0,0,0,0])))
-        self.pady = nn.ReplicationPad3d(list(reversed([0,0,sigma,sigma,0,0])))
-        self.padz = nn.ReplicationPad3d(list(reversed([0,0,0,0,sigma,sigma])))
-        self.conv_Gx = Convolve(Gx/Gx.sum(), input_channels, padding=0)
-        self.conv_Gy = Convolve(Gy/Gy.sum(), input_channels, padding=0)
-        self.conv_Gz = Convolve(Gz/Gz.sum(), input_channels, padding=0)
-        
-    def forward(self,x):
-        out = self.conv_Gx(self.padx(x))
-        out = self.conv_Gy(self.pady(out))
-        out = self.conv_Gz(self.padz(out))
-        return out
-    
-class ReplicationPad(nn.Module):
-    
-    def __init__(self, pad):
-        super(ReplicationPad, self).__init__()
-        if len(pad) == 6:
-            self.pad = nn.ReplicationPad3d(list(reversed(pad)))
-        if len(pad) == 4:
-            self.pad = nn.ReplicationPad2d(list(reversed(pad)))
-        if len(pad) == 2:
-            self.pad = nn.ReplicationPad1d(list(reversed(pad)))
-    
-    def forward(self,x):
-        return self.pad(x)
-    
-class Gradient3D(nn.Module):
-    
-    def __init__(self, input_channels):
-        super(Gradient3D, self).__init__()
-        dx = kernels3D['dx']()
-        dy = kernels3D['dy']()
-        dz = kernels3D['dz']()
-        self.padx = nn.ReplicationPad3d(list(reversed([1,1,0,0,0,0])))
-        self.pady = nn.ReplicationPad3d(list(reversed([0,0,1,1,0,0])))
-        self.padz = nn.ReplicationPad3d(list(reversed([0,0,0,0,1,1])))
-        self.conv_dx = Convolve(dx, input_channels, padding=0)
-        self.conv_dy = Convolve(dy, input_channels, padding=0)
-        self.conv_dz = Convolve(dz, input_channels, padding=0)
-        
-    def forward(self,x):
-        dx = self.conv_dx(self.padx(x))
-        dy = self.conv_dy(self.pady(x))
-        dz = self.conv_dz(self.padz(x))
-        return dx, dy, dz
-    
-class DFDT(th.nn.Module):
-    def __init__(self, input_channels, t=5):
-        super(DFDT, self).__init__()
-        self.conv_g = GaussianBlur3D(t, input_channels)
-        self.conv_n = Gradient3D(input_channels)
-        self.conv_nt = Gradient3D(1)
-        
-    def forward(self, inputs):
-        x, phi_t0 = inputs
-        phi_t = self.conv_g(1-phi_t0)
-        im_dx_t, im_dy_t, im_dz_t = self.conv_n(x)
-        phi_t_dx, phi_t_dy, phi_t_dz = self.conv_nt(phi_t)
-        eps = 1e-10
-        grad_phi_t = th.sqrt(phi_t_dx**2 + phi_t_dy**2 + phi_t_dz**2 + eps) 
-        dI_dt = ( im_dx_t*phi_t_dx + im_dy_t*phi_t_dy + im_dz_t*phi_t_dz )/grad_phi_t
-        return dI_dt
-
-##################################################### TRAINABLE ##################################################### TRAINABLE 
     
 class MeanGPool(nn.Module):
     
